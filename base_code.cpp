@@ -1,6 +1,7 @@
 #define GLFW_INCLUDE_VULKAN
 
 #include <GLFW/glfw3.h>
+#include<fstream>
 #include<algorithm>
 #include<iostream>
 #include<set>
@@ -107,7 +108,8 @@ private:
 		//创建交换链
 		createSwapChain();
 		createImageViews();
-		
+		//必须提前创建所有管线，这样才能给驱动程序带来优化空间
+		createGraphicsPipeline();
 	}
 	void createSurface()
 	{
@@ -169,7 +171,116 @@ private:
 			}
 		}
 	}
+	//读取指定文件的所有字节
+	static std::vector<char>readFile(const std::string& filename)
+	{
+		//ate从文件尾部开始读取(为了确定分配空间的大小)，以二进制形式读取文件（避免进行诸如\n和\r\n的转换）
+		std::ifstream file(filename, std::ios::ate | std::ios::binary);
+		if (!file.is_open())
+		{
+			throw std::runtime_error("failed to open file!");
+		}
+		size_t fileSize = (size_t)file.tellg();
+		std::vector<char>buffer(fileSize);
+		//跳到文件头部
+		file.seekg(0);
+		//读到buffer里
+		file.read(buffer.data(), fileSize);
+		file.close();
+		return buffer;
+	}
 
+	void createGraphicsPipeline()
+	{
+		auto vertShaderCode = readFile("shaders/vert.spv");
+		auto fragShaderCode = readFile("shaders/frag.spv");
+
+		VkShaderModule vertShaderModule;
+		VkShaderModule fragShaderModule;
+
+		vertShaderModule = createShaderModule(vertShaderCode);
+		fragShaderModule = createShaderModule(fragShaderCode);
+
+		VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+		vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		vertShaderStageInfo.module = vertShaderModule;
+		//pName指定着色器在指定阶段调用的函数，可以在一份着色器代码中实现需要的着色器，然后通过不同的pName调用
+		vertShaderStageInfo.pName = "main";
+
+		VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+		fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+		fragShaderStageInfo.module = fragShaderModule;
+		fragShaderStageInfo.pName = "main";
+
+		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,fragShaderStageInfo };
+
+		//顶点输入
+		VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
+		vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+		//顶点绑定方式：数据之间的间距和数据是按逐顶点的方式还是按逐实例的方式
+		vertexInputInfo.vertexBindingDescriptionCount = 0;
+		vertexInputInfo.pVertexBindingDescriptions = nullptr;
+		//属性描述，传递给顶点着色器的属性类型，用于将属性绑定到顶点着色器的变量
+		vertexInputInfo.vertexAttributeDescriptionCount = 0;
+		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+		
+		//输入装配
+		//描述顶点定义了哪种类型的几何图元以及是否启用几何图元重启
+		VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo= {};
+		inputAssemblyInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+		//每三个顶点构成一个三角形图元
+		inputAssemblyInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+		//如果为TRUE，且使用带有_STRIP结尾的图元 ，可以通过一个特殊索引值0xffff重启图元，从特殊索引值之后的索引
+		//重置为图元的第一个顶点
+		inputAssemblyInfo.primitiveRestartEnable = VK_FALSE;
+
+		//视口和裁剪
+		//视口定义了图像到帧缓冲的映射关系
+		//视口大小和交换链图像大小可以不一样，这里我们设置为交换链图像大小
+		//裁剪矩形定义了哪一块区域的像素被帧缓冲实际存储，任何位于裁剪矩形外的像素都会被光栅化程序丢失
+		VkViewport viewport = {};
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width  = (float)swapChainExtent.width;
+		viewport.height = (float)swapChainExtent.height;
+		//minDepth值可以大于maxDepth
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+		
+		//在本教程中，我们直接将裁剪范围设置为和帧缓冲大小一样
+		VkRect2D scissors= {};
+		scissors.offset = { 0,0 };
+		scissors.extent = swapChainExtent;
+		//视口和裁剪矩形需要通过VkPipelineViewportStateCreateInfo组合在一起
+		VkPipelineViewportStateCreateInfo viewportStateInfo = {};
+		viewportStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+		viewportStateInfo.viewportCount = 1;
+		viewportStateInfo.pViewports = &viewport;
+		viewportStateInfo.scissorCount = 1;
+		viewportStateInfo.pScissors = &scissors;
+
+		vkDestroyShaderModule(device, vertShaderModule, nullptr);
+		vkDestroyShaderModule(device, fragShaderModule, nullptr);
+		
+	}
+	VkShaderModule createShaderModule(const std::vector<char>& code)
+	{
+		VkShaderModuleCreateInfo createInfo = {};
+		createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		createInfo.codeSize = code.size();
+		//需要先将存储字节码的数组指针转换为const uint32_t*来匹配结构体中的字节码指针的变量类型
+		//此外，指针的指向地址应该符合uint32_t变量类型的内存对齐方式，这里使用的是vector，符合要求
+		createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+		VkShaderModule shaderModule;
+		if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule)!=VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create shader module!");
+		}
+		return shaderModule;
+	}
 	SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device)
 	{
 		SwapChainSupportDetails details;
@@ -198,8 +309,7 @@ private:
 		}
 		for (const auto& format : availableFormats)
 		{
-			if (format.format == VK_FORMAT_B8G8R8A8_UNORM 
-				&& format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+			if (format.format == VK_FORMAT_B8G8R8A8_UNORM && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
 			return format;
 		}
 		return availableFormats[0];
