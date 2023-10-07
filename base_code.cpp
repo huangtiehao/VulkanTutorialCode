@@ -11,11 +11,12 @@
 #include<vector>
 const int WIDTH = 800;
 const int HEIGHT = 600;
+//并行处理帧数
+const int MAX_FRAMES_IN_FLIGHT = 2;
 //指定校验层名称
 const std::vector<const char*>validationLayers = { "VK_LAYER_KHRONOS_validation" };
 //是否开启校验层
 bool enableValidationLayers = true;
-
 const std::vector<const char*> deviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
@@ -87,8 +88,11 @@ private:
 	VkPipeline graphicsPipeline;
 	VkCommandPool commandPool;
 	std::vector<VkCommandBuffer>commandBuffers;
-	VkSemaphore imageAvailableSemaphore;
-	VkSemaphore renderFinishedSemaphore;
+	std::vector<VkSemaphore> imageAvailableSemaphores;
+	std::vector<VkSemaphore> renderFinishedSemaphores;
+
+	std::vector<VkFence>inFlightFences;
+	size_t currentFrame = 0;
 
 	VkDebugUtilsMessengerEXT debugMessenger;
 	void initWindow()
@@ -127,7 +131,7 @@ private:
 		createCommandPool();
 		//指令缓冲
 		createCommandBuffers();
-		createSemaphores();
+		createSyncObjects();
 	}
 	void createSurface()
 	{
@@ -495,10 +499,11 @@ private:
 	{
 		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
 		VkCommandPoolCreateInfo commandPoolInfo = {};
+
 		commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 		//指令缓冲对象提交给队列
 		commandPoolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily;
-		commandPoolInfo.flags = 0;
+		commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 		if (vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool)!=VK_SUCCESS)
 		{
 			throw std::runtime_error("failed to create command pool!");
@@ -551,6 +556,19 @@ private:
 		//VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS表示有来自辅助指令的缓冲需要执行
 		vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+		VkViewport viewport{};
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width = (float)swapChainExtent.width;
+		viewport.height = (float)swapChainExtent.height;
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+		VkRect2D scissor{};
+		scissor.offset = { 0, 0 };
+		scissor.extent = swapChainExtent;
+		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 		vkCmdEndRenderPass(commandBuffer);
 		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
@@ -558,17 +576,32 @@ private:
 			throw std::runtime_error("failed to record command buffer!");
 		}
 	}
-	void createSemaphores()
+	//创建同步对象
+	void createSyncObjects()
 	{
+		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
 		VkSemaphoreCreateInfo semaphoreCreateInfo = {};
 		semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-		if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS)
+
+		VkFenceCreateInfo fenceCreateInfo = {};
+		fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT;i++)
 		{
-			throw std::runtime_error("failed to create imageAvailble semaphore!");
-		}
-		if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create renderFinished semaphore!");
+			if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create imageAvailble semaphore!");
+			}
+			if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create renderFinished semaphore!");
+			}
+			if (vkCreateFence(device, &fenceCreateInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create fence");
+			}
 		}
 	}
 	VkShaderModule createShaderModule(const std::vector<char>& code)
@@ -721,7 +754,7 @@ private:
 		//设为true表示不关心被窗口系统中其他窗口遮挡的像素的颜色，这允许vulkan采取一定的优化
 		createInfo.clipped = VK_TRUE;
 		createInfo.oldSwapchain = VK_NULL_HANDLE;
-		VkSwapchainKHR swapChain;
+
 		if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain) != VK_SUCCESS)
 		{
 			throw::std::runtime_error("failed to create swap chain!");
@@ -882,6 +915,7 @@ private:
 		}
 		vkDeviceWaitIdle(device);
 	}
+
 	//1.从交换链获取一张图像
 	//2.对帧缓冲附着执行指令缓冲中的渲染指令
 	//3.返回渲染后的图像到交换链进行呈现操作	
@@ -889,12 +923,17 @@ private:
 	//栅栏是对应用程序本身和渲染操作进行异步，而信号量是对一个指令队列内的操作或多个队列进行同步
 	void drawFrame()
 	{
+		//等待当前帧所使用的指令缓冲结束执行
+		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, std::numeric_limits<uint64_t>::max());
+		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 		uint32_t imageIndex;
-		vkAcquireNextImageKHR(device, swapChain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+		vkAcquireNextImageKHR(device, swapChain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
+		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 		//提交信息给指令队列
 		VkSubmitInfo submitInfo{};		
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		VkSemaphore waitSemaphores[] = { imageAvailableSemaphore };	
+		VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame]};
 		//等待图像管线到达可以写入颜色附着的阶段
 		VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 		submitInfo.waitSemaphoreCount = 1;
@@ -903,12 +942,13 @@ private:
 		//指定需要等待的管线阶段
 		submitInfo.pWaitDstStageMask = waitStages;
 		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
+		submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
 
-		VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+		VkSemaphore signalSemaphores[] = { renderFinishedSemaphores[currentFrame]};
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = signalSemaphores;
-		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+
+		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo,inFlightFences[currentFrame]) != VK_SUCCESS)
 		{
 			throw std::runtime_error("failed to submit draw command buffer!");
 		}
@@ -923,12 +963,18 @@ private:
 		presentInfo.pImageIndices = &imageIndex;
 		presentInfo.pResults = nullptr;
 		vkQueuePresentKHR(presentQueue, &presentInfo);
+		//vkQueueWaitIdle(presentQueue);
+		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
 	void cleanup()
 	{
-		vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
-		vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+		{
+			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+			vkDestroyFence(device, inFlightFences[i], nullptr);
+		}
 		vkDestroyCommandPool(device, commandPool, nullptr);
 		for (auto framebuffer : swapChainFramebuffers)
 		{
