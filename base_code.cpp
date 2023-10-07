@@ -86,6 +86,9 @@ private:
 	VkPipelineLayout pipelineLayout;
 	VkPipeline graphicsPipeline;
 	VkCommandPool commandPool;
+	std::vector<VkCommandBuffer>commandBuffers;
+	VkSemaphore imageAvailableSemaphore;
+	VkSemaphore renderFinishedSemaphore;
 
 	VkDebugUtilsMessengerEXT debugMessenger;
 	void initWindow()
@@ -122,6 +125,9 @@ private:
 		createFramebuffers();
 		//指令池
 		createCommandPool();
+		//指令缓冲
+		createCommandBuffers();
+		createSemaphores();
 	}
 	void createSurface()
 	{
@@ -241,12 +247,26 @@ private:
 		subpass.colorAttachmentCount = 1;
 		subpass.pColorAttachments = &colorAttachmentRef;
 		
+		VkSubpassDependency dependency = {};
+		dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+		//之前创建的子流程的索引
+		dependency.dstSubpass = 0;
+		dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependency.srcAccessMask = 0;
+		//指定需要等待的管线阶段
+		dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		////子流程将进行的操作，这里设置为颜色附着的读写操作
+		dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			
+
 		VkRenderPassCreateInfo renderPassInfo = {};
 		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 		renderPassInfo.attachmentCount = 1;
 		renderPassInfo.pAttachments = &colorAttachment;
 		renderPassInfo.subpassCount = 1;
 		renderPassInfo.pSubpasses = &subpass;
+		renderPassInfo.dependencyCount = 1;
+		renderPassInfo.pDependencies = &dependency;
 		if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS)
 		{
 			throw std::runtime_error("failed to create render pass!");
@@ -473,9 +493,84 @@ private:
 	//序列，在渲染时直接提交执行
 	void createCommandPool()
 	{
+		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+		VkCommandPoolCreateInfo commandPoolInfo = {};
+		commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		//指令缓冲对象提交给队列
+		commandPoolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily;
+		commandPoolInfo.flags = 0;
+		if (vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool)!=VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create command pool!");
+		}
 
 	}
 
+	//由于绘制是在帧缓冲上进行的，我们需要为交换链中的每一个图像分配一个指令缓存对象
+	void createCommandBuffers()
+	{
+		commandBuffers.resize(swapChainFramebuffers.size());
+		VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
+		commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		commandBufferAllocateInfo.commandPool = commandPool;
+		//用于指定的分配的指令缓冲对象是主要指令缓冲还是辅助指令缓冲对象
+		//Primary主要指令缓冲 可以被提交到队列进行执行，但不能被其他指令缓冲对象调用
+		//Secondary辅助指令缓冲 不能直接被提交到队列进行执行，但可以被主要指令缓冲对象执行
+		//我们可以把一些常用的指令放在辅助指令缓冲里，然后用主要指令缓冲对象中调用执行
+		commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		commandBufferAllocateInfo.commandBufferCount = (uint32_t)commandBuffers.size();
+		if (vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffers.data()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to allocate command buffers!");
+		}
+	}
+	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+	{
+		//记录指令到指令缓冲
+		VkCommandBufferBeginInfo beginInfo = {};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		//simultaneous使得我们在上一帧还未结束渲染时，提交下一帧的渲染指令
+		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+		beginInfo.pInheritanceInfo = nullptr;
+		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to begin recording command buffer!");
+		}
+		//开始渲染流程
+		VkRenderPassBeginInfo renderPassInfo = {};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassInfo.renderPass = renderPass;
+		renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
+		//指定渲染区域
+		renderPassInfo.renderArea.offset = { 0,0 };
+		renderPassInfo.renderArea.extent = swapChainExtent;
+		VkClearValue clearColor = { 0.0f,0.0f,0.0f,1.0f };
+		renderPassInfo.clearValueCount = 1;
+		renderPassInfo.pClearValues = &clearColor;
+		//VK_SUBPASS_CONTENTS_INLINE表示所有指令都在主要缓冲中，没有辅助指令缓冲需要执行
+		//VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS表示有来自辅助指令的缓冲需要执行
+		vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+		vkCmdEndRenderPass(commandBuffer);
+		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to record command buffer!");
+		}
+	}
+	void createSemaphores()
+	{
+		VkSemaphoreCreateInfo semaphoreCreateInfo = {};
+		semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+		if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create imageAvailble semaphore!");
+		}
+		if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create renderFinished semaphore!");
+		}
+	}
 	VkShaderModule createShaderModule(const std::vector<char>& code)
 	{
 		VkShaderModuleCreateInfo createInfo = {};
@@ -783,10 +878,58 @@ private:
 		{
 			//执行事件处理
 			glfwPollEvents();
+			drawFrame();
 		}
+		vkDeviceWaitIdle(device);
 	}
+	//1.从交换链获取一张图像
+	//2.对帧缓冲附着执行指令缓冲中的渲染指令
+	//3.返回渲染后的图像到交换链进行呈现操作	
+	//由于上面几个操作可以是异步执行的，所以我们需要用栅栏或信号量进行同步。
+	//栅栏是对应用程序本身和渲染操作进行异步，而信号量是对一个指令队列内的操作或多个队列进行同步
+	void drawFrame()
+	{
+		uint32_t imageIndex;
+		vkAcquireNextImageKHR(device, swapChain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+		//提交信息给指令队列
+		VkSubmitInfo submitInfo{};		
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		VkSemaphore waitSemaphores[] = { imageAvailableSemaphore };	
+		//等待图像管线到达可以写入颜色附着的阶段
+		VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+		submitInfo.waitSemaphoreCount = 1;
+		//指定执行前需要等待的信号量
+		submitInfo.pWaitSemaphores = waitSemaphores;
+		//指定需要等待的管线阶段
+		submitInfo.pWaitDstStageMask = waitStages;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
+
+		VkSemaphore signalSemaphores[] = { renderFinishedSemaphore };
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = signalSemaphores;
+		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to submit draw command buffer!");
+		}
+		//呈现
+		VkPresentInfoKHR presentInfo = {};
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+		presentInfo.waitSemaphoreCount = 1;
+		presentInfo.pWaitSemaphores = signalSemaphores;
+		VkSwapchainKHR swapChains[] = { swapChain };
+		presentInfo.swapchainCount = 1;
+		presentInfo.pSwapchains = swapChains; 
+		presentInfo.pImageIndices = &imageIndex;
+		presentInfo.pResults = nullptr;
+		vkQueuePresentKHR(presentQueue, &presentInfo);
+	}
+
 	void cleanup()
 	{
+		vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+		vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+		vkDestroyCommandPool(device, commandPool, nullptr);
 		for (auto framebuffer : swapChainFramebuffers)
 		{
 			vkDestroyFramebuffer(device, framebuffer, nullptr);
