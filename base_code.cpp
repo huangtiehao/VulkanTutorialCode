@@ -1,6 +1,8 @@
 #define GLFW_INCLUDE_VULKAN
 
 #include <GLFW/glfw3.h>
+#include<array>
+#include<glm/glm.hpp>
 #include<fstream>
 #include<algorithm>
 #include<iostream>
@@ -17,6 +19,38 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 const std::vector<const char*>validationLayers = { "VK_LAYER_KHRONOS_validation" };
 //是否开启校验层
 bool enableValidationLayers = true;
+struct Vertex {
+	glm::vec2 pos;
+	glm::vec3 color;
+	static VkVertexInputBindingDescription getBindingDescription()
+	{
+		VkVertexInputBindingDescription bindingDescription = {};
+		bindingDescription.binding = 0;
+		//步长
+		bindingDescription.stride = sizeof(Vertex);
+		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+		return bindingDescription;
+	}
+	static std::array<VkVertexInputAttributeDescription, 2>getAttributeDescriptions()
+	{
+		std::array<VkVertexInputAttributeDescription, 2>attributeDescriptions;
+		attributeDescriptions[0].binding = 0;
+		attributeDescriptions[0].location = 0;
+		attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+		attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+		attributeDescriptions[1].binding = 0;
+		attributeDescriptions[1].location = 1;
+		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[1].offset = offsetof(Vertex, color);
+		return attributeDescriptions;
+	}
+};
+const std::vector<Vertex> vertices = {
+	{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+	{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+	{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 const std::vector<const char*> deviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
@@ -92,6 +126,8 @@ private:
 	std::vector<VkSemaphore> renderFinishedSemaphores;
 
 	std::vector<VkFence>inFlightFences;
+	//标志帧缓冲大小是否改变
+	bool framebufferResized = false;
 	size_t currentFrame = 0;
 
 	VkDebugUtilsMessengerEXT debugMessenger;
@@ -100,13 +136,17 @@ private:
 		glfwInit();
 		//显示地设置GLFW阻止它自动创建openGL上下文
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		//禁止窗口大小改变
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
 		//前三个参数分别为宽度，高度，标题，
 		//第四个参数指定在哪个显示器上显示，第五个和openGL相关，对这个vulkan没用
 		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
-
+		glfwSetWindowUserPointer(window, this);
+		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+	}
+	static void framebufferResizeCallback(GLFWwindow* window,int width,int height)
+	{
+		auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+		app->framebufferResized = true;
 	}
 	void initVulkan()
 	{
@@ -211,7 +251,32 @@ private:
 		file.close();
 		return buffer;
 	}
+	void reCreateSwapChain()
+	{
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		while (width == 0 || height == 0)
+		{
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+		//等待设备处于空闲状态，避免在对象的使用过程中将其清除重建
+		vkDeviceWaitIdle(device);
+		//重建前先清除
+		cleanupSwapChain();
 
+		createSwapChain();
+		//图形视图依赖于交换链图像，所以需要重建
+		createImageViews();
+		//视口和裁剪矩形在管线创建时被指定，窗口大小改变，这些也需要修改，所以需要重建管线
+		//我们可以动态设置视口和裁剪矩形来避免管线重建
+		//为简单起见，我们不改变窗口大小和分辨率
+		//createRenderPass();
+		//createGraphicsPipeline();
+		//帧缓冲和指令缓冲依赖于交换链图像
+		createFramebuffers();
+		createCommandBuffers();
+	}
 	void createRenderPass()
 	{
 		//附着描述
@@ -302,15 +367,17 @@ private:
 
 		VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo,fragShaderStageInfo };
 
+		auto bindingDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
 		//顶点输入
 		VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 		vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 		//顶点绑定方式：数据之间的间距和数据是按逐顶点的方式还是按逐实例的方式
-		vertexInputInfo.vertexBindingDescriptionCount = 0;
-		vertexInputInfo.pVertexBindingDescriptions = nullptr;
+		vertexInputInfo.vertexBindingDescriptionCount = 1;
+		vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
 		//属性描述，传递给顶点着色器的属性类型，用于将属性绑定到顶点着色器的变量
-		vertexInputInfo.vertexAttributeDescriptionCount = 0;
-		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+		vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+		vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 		
 		//输入装配
 		//描述顶点定义了哪种类型的几何图元以及是否启用几何图元重启
@@ -418,9 +485,9 @@ private:
 		//只有非常有限的管线状态在可以不重建管线的情况下可以进行动态修改，这包括视口大小，线宽和混合常量
 		//这样设置后会导致我们之前对这使用的动态状态的设置都被忽略掉，需要在绘制时重新指定他们的值
 		std::vector<VkDynamicState>dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR };
-		VkPipelineDynamicStateCreateInfo dynamicStateInfo;
+		VkPipelineDynamicStateCreateInfo dynamicStateInfo = {};
 		dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-		dynamicStateInfo.dynamicStateCount = 2;
+		dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
 		//如果不需要在管线创建后动态修改，可以将指针设为nullptr
 		dynamicStateInfo.pDynamicStates = dynamicStates.data();
 
@@ -452,14 +519,14 @@ private:
 		pipelineInfo.pMultisampleState = &multisampleInfo;
 		pipelineInfo.pDepthStencilState = nullptr;
 		pipelineInfo.pColorBlendState = &colorBlendInfo;
-		pipelineInfo.pDynamicState = nullptr;
+		pipelineInfo.pDynamicState = &dynamicStateInfo;
 		pipelineInfo.layout = pipelineLayout;
 		pipelineInfo.renderPass = renderPass;
 		pipelineInfo.subpass = 0;
 		//basePipelineHandle可以指定一个已经创建好的管线为基础创建一个新的管线，这两个成员的设置只有在
 		//VkGraphicsPipelineCreateInfo结构体的成员变量使用了VK_PIPELINE_CREATE_DERIVATIVE_BIT标记下才会起效
 		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
-		pipelineInfo.basePipelineIndex = -1;
+		pipelineInfo.basePipelineIndex = 0;
 		if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, 
 			nullptr, &graphicsPipeline)!=VK_SUCCESS)
 		{
@@ -549,7 +616,7 @@ private:
 		//指定渲染区域
 		renderPassInfo.renderArea.offset = { 0,0 };
 		renderPassInfo.renderArea.extent = swapChainExtent;
-		VkClearValue clearColor = { 0.0f,0.0f,0.0f,1.0f };
+		VkClearValue clearColor = { {{0.0f,0.0f,0.0f,1.0f }} };
 		renderPassInfo.clearValueCount = 1;
 		renderPassInfo.pClearValues = &clearColor;
 		//VK_SUBPASS_CONTENTS_INLINE表示所有指令都在主要缓冲中，没有辅助指令缓冲需要执行
@@ -925,9 +992,19 @@ private:
 	{
 		//等待当前帧所使用的指令缓冲结束执行
 		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, std::numeric_limits<uint64_t>::max());
-		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 		uint32_t imageIndex;
-		vkAcquireNextImageKHR(device, swapChain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+		VkResult result=vkAcquireNextImageKHR(device, swapChain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR)
+		{
+			reCreateSwapChain();
+			return;
+		}
+		else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+		{
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
+		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 		//提交信息给指令队列
@@ -962,13 +1039,41 @@ private:
 		presentInfo.pSwapchains = swapChains; 
 		presentInfo.pImageIndices = &imageIndex;
 		presentInfo.pResults = nullptr;
-		vkQueuePresentKHR(presentQueue, &presentInfo);
+		result=vkQueuePresentKHR(presentQueue, &presentInfo);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR||framebufferResized)
+		{
+			framebufferResized = false;
+			reCreateSwapChain();
+		}
+		else if (result != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to present swap chain image!");
+		}
 		//vkQueueWaitIdle(presentQueue);
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
+	void cleanupSwapChain()
+	{
+		for (auto frameBuffer:swapChainFramebuffers )
+		{
+			vkDestroyFramebuffer(device, frameBuffer, nullptr);
+		}
+		for (auto imageView : swapChainImageViews)
+		{
+			vkDestroyImageView(device, imageView, nullptr);
+		}
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
+	}
+
 	void cleanup()
 	{
+		cleanupSwapChain();
+
+		vkDestroyPipeline(device, graphicsPipeline, nullptr);
+		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+		vkDestroyRenderPass(device, renderPass, nullptr);
+
 		for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
 		{
 			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
@@ -976,23 +1081,14 @@ private:
 			vkDestroyFence(device, inFlightFences[i], nullptr);
 		}
 		vkDestroyCommandPool(device, commandPool, nullptr);
-		for (auto framebuffer : swapChainFramebuffers)
-		{
-			vkDestroyFramebuffer(device, framebuffer, nullptr);
-		}
-		vkDestroyPipeline(device, graphicsPipeline, nullptr);
-		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-		vkDestroyRenderPass(device, renderPass, nullptr);
-		for (auto& imageView : swapChainImageViews)
-		{
-			vkDestroyImageView(device, imageView, nullptr);
-		}
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
+
 		vkDestroyDevice(device, nullptr);
+
 		if (enableValidationLayers) {
 			DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 		}
 		//清除实例
+		vkDestroySurfaceKHR(instance, surface, nullptr);
 		vkDestroyInstance(instance, nullptr);
 		//销毁窗口，清除资源
 		glfwDestroyWindow(window);
@@ -1048,6 +1144,7 @@ private:
 int main()
 {
 	HelloTriangleApplication app;
+
 	try {
 		app.run();
 	}catch (const std::exception& e){
