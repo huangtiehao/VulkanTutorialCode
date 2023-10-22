@@ -16,6 +16,9 @@
     <Filter Include="源文件\shaders">
       <UniqueIdentifier>{ae3fa419-17ce-4ab0-b6c4-4169f1365f22}</UniqueIdentifier>
     </Filter>
+    <Filter Include="源文件\textures">
+      <UniqueIdentifier>{b68fd8c2-0ba3-46ed-b5a1-4350233bd0ec}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="base_code.cpp">
@@ -29,5 +32,10 @@
     <None Include="shaders\shader.frag">
       <Filter>源文件\shaders</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="textures\texture.jpg">
+      <Filter>源文件\textures</Filter>
+    </Image>
   </ItemGroup>
 </Project>
