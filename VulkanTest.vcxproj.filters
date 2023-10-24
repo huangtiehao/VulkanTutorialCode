@@ -19,6 +19,9 @@
     <Filter Include="源文件\textures">
       <UniqueIdentifier>{b68fd8c2-0ba3-46ed-b5a1-4350233bd0ec}</UniqueIdentifier>
     </Filter>
+    <Filter Include="源文件\models">
+      <UniqueIdentifier>{cb368367-3b97-497a-aef1-f2471ddb6fe4}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="base_code.cpp">
@@ -34,7 +37,7 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <Image Include="textures\texture.jpg">
+    <Image Include="textures\viking_room.png">
       <Filter>源文件\textures</Filter>
     </Image>
   </ItemGroup>
