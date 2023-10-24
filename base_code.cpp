@@ -1161,7 +1161,8 @@ private:
 		VkPipelineMultisampleStateCreateInfo multisampleInfo = {};
 		multisampleInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 		//这里我们先禁用，后面章节会详细介绍
-		multisampleInfo.sampleShadingEnable = VK_FALSE;
+		multisampleInfo.sampleShadingEnable = VK_TRUE;
+		multisampleInfo.minSampleShading = .2f;
 		multisampleInfo.rasterizationSamples = msaaSamples;
 
 
@@ -1626,6 +1627,7 @@ private:
 
 		VkPhysicalDeviceFeatures deviceFeatures = {};
 		deviceFeatures.samplerAnisotropy = VK_TRUE;
+		deviceFeatures.sampleRateShading = VK_TRUE;
 		VkDeviceCreateInfo createInfo = {};
 		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 		createInfo.pQueueCreateInfos = queueCreateInfos.data();
